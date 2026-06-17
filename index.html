@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Socceroos 2026 Qualification Journey</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  body { margin: 0; font-family: system-ui, sans-serif; }
+  #controls { padding: 10px; background: #1b1b1b; color: #eee;
+              display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  #controls button { padding: 6px 12px; border: 0; border-radius: 4px;
+              background: #d62828; color: #fff; cursor: pointer; font-size: 14px; }
+  #controls button:hover { background: #b51f1f; }
+  #controls button:disabled { background: #555; cursor: default; }
+  #counter { font-weight: bold; }
+  #caption { font-size: 20px; }
+  #map { height: calc(100vh - 52px); }
+  .venue-icon { display: flex; align-items: center; justify-content: center;
+              width: 26px; height: 26px; border-radius: 50%; color: #fff;
+              font-weight: bold; font-size: 12px; border: 2px solid #fff;
+              box-shadow: 0 0 3px rgba(0,0,0,.5); }
+  #dist-counter { position: absolute; bottom: 20px; left: 10px; z-index: 1000;
+                  background: rgba(27,27,27,0.85); color: #eee; padding: 6px 12px;
+                  border-radius: 6px; font-size: 14px; font-weight: bold; }
+  #map-hint { position: absolute; bottom: 20px; right: 10px; z-index: 1000;
+              background: rgba(27,27,27,0.75); color: #aaa; padding: 5px 10px;
+              border-radius: 6px; font-size: 12px; }
+
+</style>
+</head>
+<body>
+<div id="controls">
+  <button id="btnReset" onclick="goTo(0)">⟲ Reset</button>
+  <button id="btnPrev"  onclick="step(-1)">◀ Prev</button>
+  <button id="btnNext"  onclick="step(1)">Next ▶</button>
+  <button id="btnPlay"  onclick="togglePlay()">▶ Play</button>
+  <span id="counter"></span>
+  <span id="caption"></span>
+</div>
+<div id="map"></div>
+<div id="dist-counter">Total distance: 0 km</div>
+<div id="map-hint">Click a marker for match details</div>
+
+
+<script>
+// ════════════ THINGS YOU MIGHT NEED TO CHANGE ════════════
+const DATA_FILE = "venues.geojson";   // your points file, in this same folder
+
+// Field names inside your GeoJSON. Open the file, check the "properties" of the
+// first feature, and edit the right-hand side ONLY if yours are spelled differently.
+const F = { date:"date", opponent:"opponent", score:"score",
+            venue: "venue", city:"city", country:"country", attendance:"attendance"};
+
+const HOME_COUNTRY = "Australia";      // used to colour home vs away dots
+const HOME_COLOUR  = "#FFB81C";        // home (incl. relocated Canberra game)
+const AWAY_COLOUR  = "#e76f51";        // away
+const START_VIEW   = { center: [-10, 110], zoom: 3 };
+const PLAY_MS      = 10000;             // auto-advance speed in ms
+// ═════════════════════════════════════════════════════════
+const SPIDER_OFFSET_DEG = 0.1; // nudge for stacked markers
+const map = L.map("map").setView(START_VIEW.center, START_VIEW.zoom);
+L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
+  { attribution: "© OpenStreetMap contributors © CARTO", maxZoom: 19 }).addTo(map);
+
+
+let venues = [], markers = [], legLines = [], pos = 0, playTimer = null;
+
+function icon(i, colour, active) {
+  return L.divIcon({ className: "", iconSize: [26,26], iconAnchor: [13,13],
+    html: `<div class="venue-icon" style="background:${colour};
+           ${active ? "transform:scale(1.35);border-color:#ffd166;" : ""}">${i+1}</div>` });
+}
+
+fetch(DATA_FILE).then(r => r.json()).then(build).catch(() => {
+  document.getElementById("caption").textContent =
+    "⚠ Couldn't load " + DATA_FILE + " — open this page with Live Server, not by double-clicking.";
+});
+
+function preload() {
+  return new Promise(resolve => {
+    const latlngs = venues.map(v => v.latlng);
+    // fit the whole route first so outer tiles load
+    const bounds = L.latLngBounds(latlngs);
+    map.fitBounds(bounds, { animate: false, padding: [20, 20] });
+    let i = 0;
+    function next() {
+      if (i >= latlngs.length) { resolve(); return; }
+      map.setView(latlngs[i], 10, { animate: false });
+      i++;
+      setTimeout(next, 20); // 20ms per venue — fast but gives tiles time to request
+    }
+    next();
+  });
+}
+
+// ADD these 3 lines at the very start of the build() function, before const feats = ...
+  venues = []; markers = []; legLines = [];
+
+function build(geo) {
+  venues = []; markers = []; legLines = [];
+  const feats = geo.features.slice()
+    .sort((a, b) => a.properties[F.date] > b.properties[F.date] ? 1 : -1);
+
+    // pre-pass: count how many matches share each coordinate
+  const coordTotal = {};
+  feats.forEach(f => {
+    const [lon, lat] = f.geometry.coordinates;
+    const key = `${lon.toFixed(4)},${lat.toFixed(4)}`;
+    coordTotal[key] = (coordTotal[key] || 0) + 1;
+  });
+
+  const coordSeen = {};
+  feats.forEach((f, i) => {
+    let [lon, lat] = f.geometry.coordinates;
+    const trueLat = lat, trueLon = lon;
+    const key = `${lon.toFixed(4)},${lat.toFixed(4)}`;
+    if (!coordSeen[key]) coordSeen[key] = 0;
+    const n = coordSeen[key]++;
+    const total = coordTotal[key];
+        if (total > 1) {
+      const angle = (n / total) * 2 * Math.PI - Math.PI / 2;
+      lat += SPIDER_OFFSET_DEG * Math.sin(angle);
+      lon += SPIDER_OFFSET_DEG * Math.cos(angle);
+      L.polyline([[trueLat, trueLon], [lat, lon]],
+        { color: "#aaa", weight: 3, opacity: 0.9 }).addTo(map);
+      if (n === 0) {
+        L.marker([trueLat, trueLon], {
+          icon: L.divIcon({
+            className: "",
+            iconSize: [14, 14], iconAnchor: [7, 7],
+            html: `<div style="width:10px;height:10px;border-radius:50%;
+                   background:#aaa;border:2px solid #fff;
+                   box-shadow:0 0 3px rgba(0,0,0,.5);"></div>`
+          }),
+          interactive: false
+        }).addTo(map);
+      }
+    }
+
+    const p = f.properties;
+    venues.push({ latlng: [lat, lon], p });
+    const colour = p[F.country] === HOME_COUNTRY ? HOME_COLOUR : AWAY_COLOUR;
+    const score  = p[F.score] || "–";
+    const attend = p[F.attendance] ? p[F.attendance].toLocaleString() : "unknown";
+    const m = L.marker([lat, lon], { icon: icon(i, colour, false) })
+      .bindPopup(
+        `<b>Australia v ${p[F.opponent]}: ${score}, ${p[F.date]}</b><br>` +
+        `${p[F.venue]}, ${p[F.city]}, ${p[F.country]}<br>` +
+        `Attendance: ${attend}`
+      ).addTo(map);
+    markers.push(m);
+  });
+
+  for (let i = 0; i < venues.length - 1; i++)
+    legLines.push(L.polyline([venues[i].latlng, venues[i+1].latlng],
+      { color: "#888", weight: 0 }).addTo(map));
+
+    document.getElementById("map").style.visibility = "hidden";
+    preload().then(() => {
+    map.once("moveend", () => {
+      document.getElementById("map").style.visibility = "visible";
+    });
+    goTo(0);
+  });
+
+}
+
+function haversineKm(a, b) {
+  const R = 6371, toR = d => d * Math.PI / 180;
+  const dLat = toR(b[0]-a[0]), dLon = toR(b[1]-a[1]);
+  const x = Math.sin(dLat/2)**2 + Math.cos(toR(a[0]))*Math.cos(toR(b[0]))*Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
+}
+
+
+function render() {
+  venues.forEach((v, i) => {
+    const colour = v.p[F.country] === HOME_COUNTRY ? HOME_COLOUR : AWAY_COLOUR;
+    markers[i].setIcon(icon(i, colour, i === pos, v.p[F.country] === HOME_COUNTRY));
+  });
+ if (pos === venues.length - 1) {
+    legLines.forEach((line, i) => {
+      const t = i / (venues.length - 2);
+      const r = Math.round(255 * (1 - t));
+      const g = Math.round(200 * t);
+      line.setStyle({ color: "rgb("+r+","+g+",30)", weight: 3, opacity: 0.85 });
+    });
+    map.once("moveend", () => {
+      map.flyToBounds(L.latLngBounds(venues.map(v => v.latlng)), { padding: [40, 40], duration: 3 });
+    });
+  } else {
+    legLines.forEach(line => line.setStyle({ opacity: 0 }));
+  }
+
+
+  const v = venues[pos];
+  map.flyTo(v.latlng, 10, { duration: 6, easeLinearity: 0.25 });
+  document.getElementById("counter").textContent = `Match ${pos+1} / ${venues.length}`;
+  const capScore  = v.p[F.score]      || "–";
+  const capAttend = v.p[F.attendance] ? v.p[F.attendance].toLocaleString() : "unknown";
+  document.getElementById("caption").textContent =
+    `\u3000 Australia v ${v.p[F.opponent]}: ${capScore}, ${v.p[F.date]}`
+
+
+  let totalKm = 0;
+  for (let j = 0; j < pos; j++) totalKm += haversineKm(venues[j].latlng, venues[j+1].latlng);
+  document.getElementById("dist-counter").textContent =
+    `Total distance: ${Math.round(totalKm).toLocaleString()} km`;
+  document.getElementById("btnPrev").disabled = pos === 0;
+  document.getElementById("btnNext").disabled = pos === venues.length - 1;
+}
+
+function goTo(i) { pos = i; render(); }
+function step(d) { pos = Math.max(0, Math.min(venues.length-1, pos+d)); render(); }
+
+function togglePlay() {
+  const btn = document.getElementById("btnPlay");
+  if (playTimer) { clearInterval(playTimer); playTimer = null; btn.textContent = "▶ Play"; return; }
+  btn.textContent = "⏸ Pause";
+  playTimer = setInterval(() => {
+    if (pos >= venues.length-1) { clearInterval(playTimer); playTimer=null; btn.textContent="▶ Play"; return; }
+    step(1);
+  }, PLAY_MS);
+}
+</script>
+</body>
+</html>
