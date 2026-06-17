@@ -1,6 +1,3 @@
-# WorldCup-html
-Repository for World Cup-related projects.
-
 # Socceroos Qualifying Journey
 Simple html, mapping out the qualification journey of the Socceroos for the 2026 World Cup. It's an interactive site with the ability to move between locations chronologically.
 
