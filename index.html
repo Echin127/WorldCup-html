@@ -50,7 +50,7 @@ const DATA_FILE = "venues.geojson";   // your points file, in this same folder
 
 // Field names inside your GeoJSON. Open the file, check the "properties" of the
 // first feature, and edit the right-hand side ONLY if yours are spelled differently.
-const F = { date:"date", opponent:"opponent", score:"score",
+const F = { date:"date", opponent:"opponent", score:"score", round:"round",
             venue: "venue", city:"city", country:"country", attendance:"attendance"};
 
 const HOME_COUNTRY = "Australia";      // used to colour home vs away dots
@@ -146,7 +146,7 @@ function build(geo) {
     const attend = p[F.attendance] ? p[F.attendance].toLocaleString() : "unknown";
     const m = L.marker([lat, lon], { icon: icon(i, colour, false) })
       .bindPopup(
-        `<b>Australia v ${p[F.opponent]}: ${score}, ${p[F.date]}</b><br>` +
+        `<b>Australia v ${p[F.opponent]}: ${score}, ${p[F.date]}</b><br>` + `${p[F.round]}<br>` +
         `${p[F.venue]}, ${p[F.city]}, ${p[F.country]}<br>` +
         `Attendance: ${attend}`
       ).addTo(map);
